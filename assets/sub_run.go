@@ -21,6 +21,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// RunSubStoreService 运行Sub-Store服务
 func RunSubStoreService() {
 	for {
 		if err := startSubStore(); err != nil {
@@ -94,15 +95,15 @@ func startSubStore() error {
 	cmd.Stdout = logWriter
 	cmd.Stderr = logWriter
 
-	// 检查MihomoOverwriteUrl是否包含本地IP，如果是则移除代理环境变量
+	// 检查MihomoOverwriteURL是否包含本地IP，如果是则移除代理环境变量
 	cleanProxyEnv := false
-	if config.GlobalConfig.MihomoOverwriteUrl != "" {
-		parsedURL, err := url.Parse(config.GlobalConfig.MihomoOverwriteUrl)
+	if config.GlobalConfig.MihomoOverwriteURL != "" {
+		parsedURL, err := url.Parse(config.GlobalConfig.MihomoOverwriteURL)
 		if err == nil {
 			host := parsedURL.Hostname()
 			if isLocalIP(host) {
 				cleanProxyEnv = true
-				slog.Debug("MihomoOverwriteUrl contains local IP, removing proxy environment variables")
+				slog.Debug("MihomoOverwriteURL contains local IP, removing proxy environment variables")
 			}
 		}
 	}
@@ -123,7 +124,7 @@ func startSubStore() error {
 
 	// https://hub.docker.com/r/xream/sub-store
 	// 这里有详细的变量说明，可能用NO_PROXY过滤到127.0.0.1更合适
-	// 如果MihomoOverwriteUrl包含本地IP，则移除所有代理环境变量
+	// 如果MihomoOverwriteURL包含本地IP，则移除所有代理环境变量
 	if cleanProxyEnv {
 		filteredEnv := make([]string, 0, len(cmd.Env))
 		proxyVars := []string{"http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"}
