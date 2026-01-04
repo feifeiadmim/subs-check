@@ -136,7 +136,7 @@ func GetProxies() ([]map[string]any, error) {
 }
 
 // from 3k
-// resolveSubUrls 合并本地与远程订阅清单并去重
+// resolveSubUrls 合并本地与远程订阅清单（不去重，保留重复链接）
 func resolveSubUrls() ([]string, int, int) {
 	// 计数
 	var localNum, remoteNum int
@@ -159,18 +159,13 @@ func resolveSubUrls() ([]string, int, int) {
 
 	}
 
-	// 规范化与去重
-	seen := make(map[string]struct{}, len(urls))
+	// 仅跳过空行与注释，不进行去重操作
 	out := make([]string, 0, len(urls))
 	for _, s := range urls {
 		s = strings.TrimSpace(s)
 		if s == "" || strings.HasPrefix(s, "#") { // 跳过空行与注释
 			continue
 		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
 		out = append(out, s)
 	}
 	return out, localNum, remoteNum

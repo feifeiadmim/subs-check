@@ -95,7 +95,9 @@ func startSubStore() error {
 	cmd.Stderr = logWriter
 
 	// 检查MihomoOverwriteUrl是否包含本地IP，如果是则移除代理环境变量
+	// 如果配置了代理且MihomoOverwriteUrl不是本地地址，则设置代理环境变量
 	cleanProxyEnv := false
+	useProxy := false
 	if config.GlobalConfig.MihomoOverwriteUrl != "" {
 		parsedURL, err := url.Parse(config.GlobalConfig.MihomoOverwriteUrl)
 		if err == nil {
@@ -103,6 +105,10 @@ func startSubStore() error {
 			if isLocalIP(host) {
 				cleanProxyEnv = true
 				slog.Debug("MihomoOverwriteUrl contains local IP, removing proxy environment variables")
+			} else if config.GlobalConfig.Proxy != "" {
+				// MihomoOverwriteUrl 不是本地地址且配置了代理，则使用代理
+				useProxy = true
+				slog.Debug("MihomoOverwriteUrl is remote, will use proxy for Sub-Store", "proxy", config.GlobalConfig.Proxy)
 			}
 		}
 	}
@@ -141,6 +147,15 @@ func startSubStore() error {
 			}
 		}
 		cmd.Env = filteredEnv
+	}
+
+	// 如果配置了代理且MihomoOverwriteUrl不是本地地址，则设置代理环境变量
+	if useProxy {
+		cmd.Env = append(cmd.Env,
+			fmt.Sprintf("http_proxy=%s", config.GlobalConfig.Proxy),
+			fmt.Sprintf("https_proxy=%s", config.GlobalConfig.Proxy),
+			fmt.Sprintf("all_proxy=%s", config.GlobalConfig.Proxy),
+		)
 	}
 
 	// 增加body限制，默认1M

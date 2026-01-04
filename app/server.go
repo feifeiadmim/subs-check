@@ -20,7 +20,9 @@ import (
 // initHttpServer 初始化HTTP服务器
 func (app *App) initHttpServer() error {
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.Default()
+	// 禁用 GIN 请求日志，仅保留 Recovery 中间件
+	router := gin.New()
+	router.Use(gin.Recovery())
 
 	saver, err := method.NewLocalSaver()
 	if err != nil {

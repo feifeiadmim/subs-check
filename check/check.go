@@ -38,17 +38,20 @@ type Result struct {
 	IP         string
 	IPRisk     string
 	Country    string
+	SpeedKBps  int `json:"-" yaml:"-"` // 测速结果（KB/s），不序列化
 }
 
 // ProxyChecker 处理代理检测的主要结构体
 type ProxyChecker struct {
-	results     []Result
-	proxyCount  int
-	threadCount int
-	progress    int32
-	available   int32
-	resultChan  chan Result
-	tasks       chan map[string]any
+	results          []Result
+	proxyCount       int
+	threadCount      int
+	progress         int32
+	available        int32
+	resultChan       chan Result
+	tasks            chan map[string]any
+	disableEarlyStop bool   // 是否禁用早停机制
+	stageName        string // 阶段名称（用于进度显示）
 }
 
 var Progress atomic.Uint32
@@ -107,6 +110,32 @@ func Check() ([]Result, error) {
 	proxies = proxyutils.DeduplicateProxies(proxies)
 	slog.Info(fmt.Sprintf("去重后节点数量: %d", len(proxies)))
 
+	// 检查是否启用两阶段模式
+	if config.GlobalConfig.TwoStageEnabled() {
+		slog.Info("开始检测节点")
+		slog.Info("当前参数",
+			"超时", config.GlobalConfig.Timeout,
+			"并发数", config.GlobalConfig.Concurrent,
+			"启用测速", config.GlobalConfig.SpeedTestUrl != "",
+			"最低速度", config.GlobalConfig.MinSpeed,
+			"下载超时", config.GlobalConfig.DownloadTimeout,
+			"下载大小MB", config.GlobalConfig.DownloadMB,
+			"总速度限制", config.GlobalConfig.TotalSpeedLimit)
+		slog.Info("两阶段检测模式",
+			"连通性并发", config.GlobalConfig.Phase1Threads(),
+			"测速并发", config.GlobalConfig.EffectivePhase2Threads())
+		twoStageChecker := NewTwoStageChecker(proxies)
+		return twoStageChecker.Run()
+	}
+
+	// 检查是否只配置了一个两阶段字段（输出警告）
+	if config.GlobalConfig.ConnectivityThreads != nil && config.GlobalConfig.SpeedTestThreads == nil {
+		slog.Warn("只配置了 connectivity-threads，未配置 speed-test-threads，使用旧路径")
+	} else if config.GlobalConfig.ConnectivityThreads == nil && config.GlobalConfig.SpeedTestThreads != nil {
+		slog.Warn("只配置了 speed-test-threads，未配置 connectivity-threads，使用旧路径")
+	}
+
+	// 旧路径
 	checker := NewProxyChecker(len(proxies))
 	return checker.run(proxies)
 }
@@ -278,8 +307,15 @@ func (pc *ProxyChecker) checkProxy(proxy map[string]any) *Result {
 	return res
 }
 
-// updateProxyName 更新代理名称
+// updateProxyName 更新代理名称（兼容包装，旧路径使用）
 func (pc *ProxyChecker) updateProxyName(res *Result, httpClient *ProxyClient, speed int) {
+	// 旧路径：当 SpeedTestUrl 非空时添加速度标签
+	includeSpeedTag := config.GlobalConfig.SpeedTestUrl != ""
+	pc.updateProxyNameEx(res, httpClient, speed, includeSpeedTag)
+}
+
+// updateProxyNameEx 更新代理名称（显式控制速度标签）
+func (pc *ProxyChecker) updateProxyNameEx(res *Result, httpClient *ProxyClient, speed int, includeSpeedTag bool) {
 	// 以节点IP查询位置重命名节点
 	if config.GlobalConfig.RenameNode {
 		if res.Country != "" {
@@ -294,8 +330,8 @@ func (pc *ProxyChecker) updateProxyName(res *Result, httpClient *ProxyClient, sp
 	name = strings.TrimSpace(name)
 
 	var tags []string
-	// 获取速度
-	if config.GlobalConfig.SpeedTestUrl != "" {
+	// 速度标签（仅当 includeSpeedTag 为 true 时添加）
+	if includeSpeedTag {
 		name = regexp.MustCompile(`\s*\|(?:\s*[\d.]+[KM]B/s)`).ReplaceAllString(name, "")
 		var speedStr string
 		if speed < 1024 {
@@ -378,7 +414,15 @@ func (pc *ProxyChecker) showProgress(done chan bool) {
 
 			// if 0/0 = NaN ,shoule panic
 			percent := float64(current) / float64(pc.proxyCount) * 100
-			fmt.Printf("\r进度: [%-45s] %.1f%% (%d/%d) 可用: %d",
+
+			// 使用阶段名称（如果设置了）
+			prefix := "进度"
+			if pc.stageName != "" {
+				prefix = pc.stageName
+			}
+
+			fmt.Printf("\r%s: [%-45s] %.1f%% (%d/%d) 可用: %d",
+				prefix,
 				strings.Repeat("=", int(percent/2))+">",
 				percent,
 				current,
@@ -403,7 +447,8 @@ func (pc *ProxyChecker) incrementAvailable() {
 // distributeProxies 分发代理任务
 func (pc *ProxyChecker) distributeProxies(proxies []map[string]any) {
 	for _, proxy := range proxies {
-		if config.GlobalConfig.SuccessLimit > 0 && atomic.LoadInt32(&pc.available) >= config.GlobalConfig.SuccessLimit {
+		// 早停检查：仅当 disableEarlyStop 为 false 时才检查 success-limit
+		if !pc.disableEarlyStop && config.GlobalConfig.SuccessLimit > 0 && atomic.LoadInt32(&pc.available) >= config.GlobalConfig.SuccessLimit {
 			break
 		}
 		if ForceClose.Load() {
@@ -468,6 +513,59 @@ func (pc *ProxyChecker) checkSubscriptionSuccessRate(allProxies []map[string]any
 			successRate := float32(stats.success) / float32(stats.total)
 
 			// 如果成功率低于x，发出警告
+			if successRate < config.GlobalConfig.SuccessRate {
+				slog.Warn(fmt.Sprintf("订阅成功率过低: %s", subUrl),
+					"总节点数", stats.total,
+					"成功节点数", stats.success,
+					"成功占比", fmt.Sprintf("%.2f%%", successRate*100))
+			} else {
+				slog.Debug(fmt.Sprintf("订阅节点统计: %s", subUrl),
+					"总节点数", stats.total,
+					"成功节点数", stats.success,
+					"成功占比", fmt.Sprintf("%.2f%%", successRate*100))
+			}
+		}
+	}
+}
+
+// checkSubscriptionSuccessRateWithResults 使用自定义数据源统计成功率
+// totalSource: 用于计算 total 的代理列表（如 candidates）
+// results: 用于计算 success 的结果列表（如 stage2PassedAll）
+func checkSubscriptionSuccessRateWithResults(totalSource []map[string]any, results []Result) {
+	subStats := make(map[string]struct {
+		total   int
+		success int
+	})
+
+	// 统计 total（来自 totalSource）
+	for _, proxy := range totalSource {
+		if subUrl, ok := proxy["sub_url"].(string); ok {
+			stats := subStats[subUrl]
+			stats.total++
+			subStats[subUrl] = stats
+		}
+	}
+
+	// 统计 success（来自 results）
+	for i := range results {
+		if results[i].Proxy != nil {
+			if subUrl, ok := results[i].Proxy["sub_url"].(string); ok {
+				stats := subStats[subUrl]
+				stats.success++
+				subStats[subUrl] = stats
+			}
+			// 清理 sub_url
+			delete(results[i].Proxy, "sub_url")
+			if subTag, ok := results[i].Proxy["sub_tag"].(string); ok && subTag == "" {
+				delete(results[i].Proxy, "sub_tag")
+			}
+		}
+	}
+
+	// 输出统计结果
+	for subUrl, stats := range subStats {
+		if stats.total > 0 {
+			successRate := float32(stats.success) / float32(stats.total)
 			if successRate < config.GlobalConfig.SuccessRate {
 				slog.Warn(fmt.Sprintf("订阅成功率过低: %s", subUrl),
 					"总节点数", stats.total,

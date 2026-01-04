@@ -5,6 +5,8 @@ import _ "embed"
 type Config struct {
 	PrintProgress        bool     `yaml:"print-progress"`
 	Concurrent           int      `yaml:"concurrent"`
+	ConnectivityThreads  *int     `yaml:"connectivity-threads"`
+	SpeedTestThreads     *int     `yaml:"speed-test-threads"`
 	CheckInterval        int      `yaml:"check-interval"`
 	CronExpression       string   `yaml:"cron-expression"`
 	AliveTestUrl         string   `yaml:"alive-test-url"`
@@ -82,3 +84,37 @@ var GlobalConfig = &Config{
 var DefaultConfigTemplate []byte
 
 var GlobalProxies []map[string]any
+
+// TwoStageEnabled 判断是否启用两阶段模式
+// 只有当 ConnectivityThreads 和 SpeedTestThreads 两个字段都配置时才启用
+func (c *Config) TwoStageEnabled() bool {
+	return c.ConnectivityThreads != nil && c.SpeedTestThreads != nil
+}
+
+// Phase1Threads 返回阶段1并发线程数
+// 若 ConnectivityThreads 非 nil 且值大于 0，则返回该值；否则返回 Concurrent 的值
+func (c *Config) Phase1Threads() int {
+	if c.ConnectivityThreads != nil && *c.ConnectivityThreads > 0 {
+		return *c.ConnectivityThreads
+	}
+	return c.Concurrent
+}
+
+// RawPhase2Threads 返回原始阶段2线程数配置
+// 若 SpeedTestThreads 非 nil 且值大于 0，则返回该值；否则返回 0
+func (c *Config) RawPhase2Threads() int {
+	if c.SpeedTestThreads != nil && *c.SpeedTestThreads > 0 {
+		return *c.SpeedTestThreads
+	}
+	return 0
+}
+
+// EffectivePhase2Threads 返回有效阶段2线程数（考虑 speed-test-url）
+// 若 SpeedTestUrl 为空，返回 0（退化模式）
+// 否则返回 RawPhase2Threads 的值
+func (c *Config) EffectivePhase2Threads() int {
+	if c.SpeedTestUrl == "" {
+		return 0
+	}
+	return c.RawPhase2Threads()
+}

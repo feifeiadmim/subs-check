@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/beck-8/subs-check/config"
 	"github.com/beck-8/subs-check/utils"
@@ -65,12 +67,27 @@ func (ls *LocalSaver) Save(yamlData []byte, filename string) error {
 	}
 
 	// 构建文件路径并保存
-	filepath := filepath.Join(ls.OutputPath, filename)
+	filePath := filepath.Join(ls.OutputPath, filename)
 
-	if err := os.WriteFile(filepath, yamlData, fileMode); err != nil {
+	if err := os.WriteFile(filePath, yamlData, fileMode); err != nil {
 		return fmt.Errorf("写入文件失败 [%s]: %w", filename, err)
 	}
-	slog.Info("保存本地成功", "filepath", filepath)
+	slog.Info("保存本地成功", "filepath", filePath)
+
+	// 如果是 all.yaml，额外保存一个带时间戳的备份文件
+	if filename == "all.yaml" {
+		timestamp := time.Now().Format("20060102150405")
+		ext := filepath.Ext(filename)
+		baseName := strings.TrimSuffix(filename, ext)
+		backupFilename := fmt.Sprintf("%s_%s%s", baseName, timestamp, ext)
+		backupPath := filepath.Join(ls.OutputPath, backupFilename)
+
+		if err := os.WriteFile(backupPath, yamlData, fileMode); err != nil {
+			slog.Warn("保存备份文件失败", "filepath", backupPath, "error", err)
+		} else {
+			slog.Info("保存备份文件成功", "filepath", backupPath)
+		}
+	}
 
 	return nil
 }
